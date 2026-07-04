@@ -2,7 +2,8 @@ import express from 'express';
 import dotenv from 'dotenv';
 import axios from 'axios';
 import path from 'path';
-import { saveQuestion, getQuestions, searchQuestions } from './db.js';
+import cron from 'node-cron';
+import { saveQuestion, getQuestions, searchQuestions, getDailyPracticeQuestions, markQuestionRevision, markQuestionUnderstood } from './db.js';
 import { classifyQuestion, extractQuestionsFromImage } from './openai.js';
 
 // Load environment variables from standard root and src/ directories
@@ -12,6 +13,7 @@ dotenv.config({ path: path.join(process.cwd(), 'src', '.env') });
 
 const app = express();
 const port = process.env.PORT || 3000;
+const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID;
 
 // Parse JSON request bodies
 app.use(express.json());
@@ -24,6 +26,77 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+/**
+ * Sends a daily practice session of 20 questions to the owner.
+ */
+async function sendDailyPractice(): Promise<void> {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  if (!botToken || !OWNER_CHAT_ID) {
+    console.error('Cannot send daily practice: TELEGRAM_BOT_TOKEN or OWNER_CHAT_ID not set.');
+    return;
+  }
+
+  try {
+    const questions = await getDailyPracticeQuestions(20);
+
+    if (questions.length === 0) {
+      await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        chat_id: OWNER_CHAT_ID,
+        text: '📚 <b>Daily Practice</b>\n\nNo questions due for practice today! All caught up 🎉',
+        parse_mode: 'HTML'
+      });
+      return;
+    }
+
+    // Send header message
+    await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      chat_id: OWNER_CHAT_ID,
+      text: `📚 <b>Daily Practice — ${new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' })}</b>\n\n${questions.length} questions for today. Good luck! 💪`,
+      parse_mode: 'HTML'
+    });
+
+    // Send each question with inline buttons
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      const questionText = `📝 <b>Q${i + 1}/${questions.length}</b> [${escapeHtml(q.topic || 'General')} / ${escapeHtml(q.sub_topic || 'General')}]\n\n${escapeHtml(q.question)}`;
+
+      await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        chat_id: OWNER_CHAT_ID,
+        text: questionText,
+        parse_mode: 'HTML',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🔄 Need Revision', callback_data: `practice_revision:${q.id}` },
+              { text: '✅ Fully Understood', callback_data: `practice_understood:${q.id}` }
+            ]
+          ]
+        }
+      });
+
+      // Small delay to avoid hitting Telegram rate limits
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+
+    console.log(`Daily practice sent: ${questions.length} questions to chat ${OWNER_CHAT_ID}`);
+  } catch (err: any) {
+    console.error('Error sending daily practice:', err?.message || err);
+  }
+}
+
+// Schedule daily practice cron job
+// Default: '30 2 * * *' = 2:30 AM UTC = 8:00 AM IST
+const cronExpression = process.env.DAILY_CRON || '30 2 * * *';
+if (cron.validate(cronExpression)) {
+  cron.schedule(cronExpression, () => {
+    console.log(`[CRON] Daily practice triggered at ${new Date().toISOString()}`);
+    sendDailyPractice();
+  });
+  console.log(`Daily practice cron scheduled: "${cronExpression}"`);
+} else {
+  console.error(`Invalid DAILY_CRON expression: "${cronExpression}". Cron job NOT scheduled.`);
 }
 
 // Health endpoint
@@ -57,7 +130,44 @@ app.post('/webhook', async (req, res) => {
         }
       }
 
-      if (data && data.startsWith('select_topic:')) {
+      // Handle practice revision button
+      if (data && data.startsWith('practice_revision:')) {
+        const questionId = parseInt(data.substring(18), 10);
+        try {
+          await markQuestionRevision(questionId);
+          if (botToken) {
+            await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+              chat_id: chatId,
+              text: `🔄 Marked for revision — will reappear in <b>2 days</b> ↩️`,
+              parse_mode: 'HTML',
+              reply_to_message_id: callback_query.message.message_id
+            });
+          }
+        } catch (err: any) {
+          console.error('Error marking revision:', err?.message || err);
+        }
+      }
+
+      // Handle practice understood button
+      else if (data && data.startsWith('practice_understood:')) {
+        const questionId = parseInt(data.substring(20), 10);
+        try {
+          await markQuestionUnderstood(questionId);
+          if (botToken) {
+            await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+              chat_id: chatId,
+              text: `✅ Marked as <b>fully understood</b> — won't appear again 🧠`,
+              parse_mode: 'HTML',
+              reply_to_message_id: callback_query.message.message_id
+            });
+          }
+        } catch (err: any) {
+          console.error('Error marking understood:', err?.message || err);
+        }
+      }
+
+      // Handle topic selection button
+      else if (data && data.startsWith('select_topic:')) {
         const topic = data.substring(13); // Extract topic name
         try {
           const questions = await getQuestions(topic);
@@ -108,9 +218,6 @@ app.post('/webhook', async (req, res) => {
             console.error('Response status:', err.response.status);
             console.error('Response data:', JSON.stringify(err.response.data));
           }
-          if (err?.code) console.error('Error code:', err.code);
-          if (err?.details) console.error('Error details:', err.details);
-          if (err?.hint) console.error('Error hint:', err.hint);
         }
       }
     }
@@ -119,6 +226,9 @@ app.post('/webhook', async (req, res) => {
       const chatId = message.chat.id;
       const text = message.text as string | undefined;
       const photo = message.photo;
+
+      // Log chat ID for owner identification
+      console.log(`Message from chat ID: ${chatId}`);
 
       // Handle screenshots / photos
       if (photo && photo.length > 0) {
@@ -219,7 +329,8 @@ Send a photo/screenshot to extract questions using AI.
 /help - Show this help message
 /topics - List all saved topics
 /search &lt;keyword&gt; - Search questions by keyword
-/random - Show a random interview question`;
+/random - Show a random interview question
+/practice - Start a practice session (20 questions)`;
 
           if (botToken && botToken !== 'your_telegram_bot_token_here') {
             await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -350,6 +461,18 @@ Send a photo/screenshot to extract questions using AI.
           } catch (err: any) {
             console.error('Error in /random:', err?.message || err);
           }
+        } else if (command === '/practice') {
+          // Owner-only: manual trigger for daily practice
+          if (OWNER_CHAT_ID && chatId.toString() !== OWNER_CHAT_ID) {
+            if (botToken) {
+              await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                chat_id: chatId,
+                text: '🔒 This command is only available to the bot owner.'
+              });
+            }
+          } else {
+            await sendDailyPractice();
+          }
         }
       }
     }
@@ -363,6 +486,9 @@ Send a photo/screenshot to extract questions using AI.
 
 app.listen(port, () => {
   console.log(`Server is running on port ${port}`);
+  if (OWNER_CHAT_ID) {
+    console.log(`Owner chat ID: ${OWNER_CHAT_ID}`);
+  } else {
+    console.log('⚠️  OWNER_CHAT_ID not set. Send any message to the bot and check logs for your chat ID.');
+  }
 });
-
-
