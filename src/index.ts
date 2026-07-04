@@ -1,17 +1,30 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import axios from 'axios';
+import path from 'path';
 import { saveQuestion, getQuestions, searchQuestions } from './db.js';
 import { classifyQuestion, extractQuestionsFromImage } from './openai.js';
 
-// Load environment variables from .env file
+// Load environment variables from standard root and src/ directories
 dotenv.config();
+dotenv.config({ path: path.join(process.cwd(), 'src', '.ENV') });
+dotenv.config({ path: path.join(process.cwd(), 'src', '.env') });
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 // Parse JSON request bodies
 app.use(express.json());
+
+/**
+ * Escapes HTML characters to prevent Telegram HTML parse mode errors.
+ */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 // Health endpoint
 app.get('/health', (req, res) => {
@@ -48,25 +61,56 @@ app.post('/webhook', async (req, res) => {
         const topic = data.substring(13); // Extract topic name
         try {
           const questions = await getQuestions(topic);
-          const questionsList = questions
-            .map((q, idx) => `<b>${idx + 1}. [${q.sub_topic || 'General'}]</b>\n${q.question}`)
-            .join('\n\n');
 
-          const replyText = questionsList.length > 0
-            ? `<b>Questions in ${topic}:</b>\n\n${questionsList}`
-            : `No questions found in topic "${topic}".`;
-
-          if (botToken && botToken !== 'your_telegram_bot_token_here') {
-            await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-              chat_id: chatId,
-              text: replyText,
-              parse_mode: 'HTML'
-            });
+          if (questions.length === 0) {
+            if (botToken && botToken !== 'your_telegram_bot_token_here') {
+              await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                chat_id: chatId,
+                text: `No questions found in topic "${escapeHtml(topic)}".`
+              });
+            }
           } else {
-            console.log(`Questions in topic ${topic}:\n`, replyText);
+            // Build individual question strings
+            const header = `<b>Questions in ${escapeHtml(topic)} (${questions.length}):</b>\n\n`;
+            const questionStrings = questions.map(
+              (q, idx) => `<b>${idx + 1}. [${escapeHtml(q.sub_topic || 'General')}]</b>\n${escapeHtml(q.question)}`
+            );
+
+            // Chunk messages to stay under Telegram's 4096 char limit
+            const MAX_LEN = 4000;
+            const chunks: string[] = [];
+            let current = header;
+
+            for (const qs of questionStrings) {
+              if ((current + qs + '\n\n').length > MAX_LEN) {
+                chunks.push(current);
+                current = '';
+              }
+              current += (current.length > 0 && current !== header ? '\n\n' : '') + qs;
+            }
+            if (current.length > 0) chunks.push(current);
+
+            if (botToken && botToken !== 'your_telegram_bot_token_here') {
+              for (const chunk of chunks) {
+                await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                  chat_id: chatId,
+                  text: chunk,
+                  parse_mode: 'HTML'
+                });
+              }
+            } else {
+              console.log(`Questions in topic ${topic}:\n`, chunks.join('\n---\n'));
+            }
           }
         } catch (err: any) {
           console.error('Error fetching questions for topic:', err?.message || err);
+          if (err?.response) {
+            console.error('Response status:', err.response.status);
+            console.error('Response data:', JSON.stringify(err.response.data));
+          }
+          if (err?.code) console.error('Error code:', err.code);
+          if (err?.details) console.error('Error details:', err.details);
+          if (err?.hint) console.error('Error hint:', err.hint);
         }
       }
     }
@@ -257,9 +301,9 @@ Send a photo/screenshot to extract questions using AI.
                 }
               } else {
                 const resultsList = results
-                  .map((q, idx) => `<b>${idx + 1}. [${q.topic || 'General'}]</b>\n${q.question}`)
+                  .map((q, idx) => `<b>${idx + 1}. [${escapeHtml(q.topic || 'General')}]</b>\n${escapeHtml(q.question)}`)
                   .join('\n\n');
-                const replyText = `<b>Matching questions for "${keyword}":</b>\n\n${resultsList}`;
+                const replyText = `<b>Matching questions for "${escapeHtml(keyword)}":</b>\n\n${resultsList}`;
 
                 if (botToken && botToken !== 'your_telegram_bot_token_here') {
                   await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
@@ -291,7 +335,7 @@ Send a photo/screenshot to extract questions using AI.
             } else {
               const randomIndex = Math.floor(Math.random() * questions.length);
               const randomQ = questions[randomIndex];
-              const replyText = `🎲 <b>Random Question</b> [ID: ${randomQ.id}]\n\n<b>Topic:</b> ${randomQ.topic || 'General'} / ${randomQ.sub_topic || 'General'}\n\n<b>Question:</b>\n${randomQ.question}`;
+              const replyText = `🎲 <b>Random Question</b> [ID: ${randomQ.id}]\n\n<b>Topic:</b> ${escapeHtml(randomQ.topic || 'General')} / ${escapeHtml(randomQ.sub_topic || 'General')}\n\n<b>Question:</b>\n${escapeHtml(randomQ.question)}`;
 
               if (botToken && botToken !== 'your_telegram_bot_token_here') {
                 await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
