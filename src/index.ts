@@ -60,7 +60,13 @@ async function sendDailyPractice(): Promise<void> {
     // Send each question with inline buttons
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i];
-      const questionText = `📝 <b>Q${i + 1}/${questions.length}</b> [${escapeHtml(q.topic || 'General')} / ${escapeHtml(q.sub_topic || 'General')}]\n\n${escapeHtml(q.question)}`;
+      const tagEmojis: Record<string, string> = {
+        'Interview': '🎯', 'Mostly Asked': '🔥', 'Favourite': '⭐',
+        'Conceptual': '💡', 'Coding': '💻', 'Tricky': '🧩',
+        'Advanced': '🚀', 'Beginner': '🌱'
+      };
+      const tagsStr = (q.tags || []).map(t => `${tagEmojis[t] || '🏷️'} ${t}`).join('  ');
+      const questionText = `📝 <b>Q${i + 1}/${questions.length}</b> [${escapeHtml(q.topic || 'General')} / ${escapeHtml(q.sub_topic || 'General')}]\n${tagsStr ? tagsStr + '\n' : ''}\n${escapeHtml(q.question)}`;
 
       await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         chat_id: OWNER_CHAT_ID,
@@ -274,8 +280,8 @@ app.post('/webhook', async (req, res) => {
               // Classify and save each question
               await Promise.all(
                 questions.map(async (q) => {
-                  const { topic, subTopic } = await classifyQuestion(q);
-                  await saveQuestion(q, topic, subTopic);
+                  const { topic, subTopic, tags } = await classifyQuestion(q);
+                  await saveQuestion(q, topic, subTopic, tags);
                 })
               );
             }
@@ -296,16 +302,17 @@ app.post('/webhook', async (req, res) => {
         if (lines.length === 1) {
           const question = lines[0];
           // Classify the question using OpenAI
-          const { topic, subTopic } = await classifyQuestion(question);
+          const { topic, subTopic, tags } = await classifyQuestion(question);
 
           // Save the question to the database
-          await saveQuestion(question, topic, subTopic);
+          await saveQuestion(question, topic, subTopic, tags);
 
           if (!botToken || botToken === 'your_telegram_bot_token_here') {
             console.warn('Warning: TELEGRAM_BOT_TOKEN is not configured.');
           } else {
             // Send response back to Telegram
-            const replyText = `✅ Saved\nTopic: ${topic}\nSub Topic: ${subTopic}`;
+            const tagsDisplay = tags.length > 0 ? `\nTags: ${tags.join(', ')}` : '';
+            const replyText = `✅ Saved\nTopic: ${topic}\nSub Topic: ${subTopic}${tagsDisplay}`;
             await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
               chat_id: chatId,
               text: replyText
@@ -315,8 +322,8 @@ app.post('/webhook', async (req, res) => {
           // Save and classify each question
           await Promise.all(
             lines.map(async (line) => {
-              const { topic, subTopic } = await classifyQuestion(line);
-              await saveQuestion(line, topic, subTopic);
+              const { topic, subTopic, tags } = await classifyQuestion(line);
+              await saveQuestion(line, topic, subTopic, tags);
             })
           );
 

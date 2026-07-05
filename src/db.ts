@@ -27,6 +27,7 @@ export interface Question {
   review_status: string;
   next_review_date: string | null;
   review_count: number;
+  tags: string[];
 }
 
 /**
@@ -35,14 +36,16 @@ export interface Question {
 export async function saveQuestion(
   question: string,
   topic?: string,
-  subTopic?: string
+  subTopic?: string,
+  tags?: string[]
 ): Promise<Question> {
   const { data, error } = await supabase
     .from('questions')
     .insert({
       question,
       topic: topic || null,
-      sub_topic: subTopic || null
+      sub_topic: subTopic || null,
+      tags: tags || []
     })
     .select()
     .single();
@@ -135,7 +138,13 @@ export async function getDailyPracticeQuestions(limit: number): Promise<Question
 
   const unseenQuestions = (unseenData || []) as Question[];
 
-  return [...revisionQuestions, ...unseenQuestions];
+  // Combine and shuffle to mix topics
+  const combined = [...revisionQuestions, ...unseenQuestions];
+  for (let i = combined.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [combined[i], combined[j]] = [combined[j], combined[i]];
+  }
+  return combined;
 }
 
 /**

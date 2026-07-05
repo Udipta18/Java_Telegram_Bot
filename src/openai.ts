@@ -12,12 +12,12 @@ const openai = new OpenAI({
  * Classifies a given interview question text using OpenAI.
  * Returns the detected topic and subTopic.
  */
-export async function classifyQuestion(question: string): Promise<{ topic: string; subTopic: string }> {
+export async function classifyQuestion(question: string): Promise<{ topic: string; subTopic: string; tags: string[] }> {
   try {
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey || apiKey === 'your_openai_api_key_here') {
       console.warn('Warning: OPENAI_API_KEY is not configured. Using fallback classification.');
-      return { topic: 'General', subTopic: 'General' };
+      return { topic: 'General', subTopic: 'General', tags: [] };
     }
 
     const response = await openai.chat.completions.create({
@@ -25,7 +25,7 @@ export async function classifyQuestion(question: string): Promise<{ topic: strin
       messages: [
         {
           role: 'system',
-          content: 'You are an AI that classifies technical interview questions. Categorize the given interview question. Return a JSON object with keys "topic" (e.g., Java, Spring, SQL, Systems Design) and "subTopic" (e.g., Garbage Collection, Dependency Injection, Joins, Caching). Be concise, use title case.'
+          content: 'You are an AI that classifies technical interview questions. Categorize the given interview question. Return a JSON object with keys: "topic" (e.g., Java, Spring, SQL, Systems Design), "subTopic" (e.g., Garbage Collection, Dependency Injection, Joins, Caching), and "tags" (an array of 1-3 tags from this list: "Interview", "Mostly Asked", "Favourite", "Conceptual", "Coding", "Tricky", "Advanced", "Beginner"). Be concise, use title case.'
         },
         {
           role: 'user',
@@ -40,11 +40,12 @@ export async function classifyQuestion(question: string): Promise<{ topic: strin
 
     return {
       topic: parsed.topic || 'General',
-      subTopic: parsed.subTopic || 'General'
+      subTopic: parsed.subTopic || 'General',
+      tags: Array.isArray(parsed.tags) ? parsed.tags : []
     };
   } catch (error: any) {
     console.error('Error classifying question with OpenAI:', error?.message || error);
-    return { topic: 'General', subTopic: 'General' };
+    return { topic: 'General', subTopic: 'General', tags: [] };
   }
 }
 
