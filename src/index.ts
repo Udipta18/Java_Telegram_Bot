@@ -107,6 +107,23 @@ app.get('/health', (req, res) => {
   });
 });
 
+// External cron trigger endpoint
+// Use a free service like cron-job.org to call this URL at 8 AM IST
+// URL: https://your-app.onrender.com/cron/daily-practice?secret=YOUR_CRON_SECRET
+app.get('/cron/daily-practice', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+
+  // If CRON_SECRET is set, validate the request
+  if (cronSecret && req.query.secret !== cronSecret) {
+    res.status(403).json({ error: 'Forbidden' });
+    return;
+  }
+
+  console.log(`[CRON] External daily practice triggered at ${new Date().toISOString()}`);
+  await sendDailyPractice();
+  res.json({ status: 'ok', message: 'Daily practice sent' });
+});
+
 // Telegram Webhook endpoint
 app.post('/webhook', async (req, res) => {
   try {
