@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import axios from 'axios';
 import path from 'path';
 import cron from 'node-cron';
-import { saveQuestion, getQuestions, searchQuestions, getDailyPracticeQuestions, markQuestionRevision, markQuestionUnderstood } from './db.js';
+import { saveQuestion, getQuestions, searchQuestions, getDailyPracticeQuestions, markQuestionRevision, markQuestionUnderstood, getQuestionsWithoutTags, updateQuestionTags } from './db.js';
 import { classifyQuestion, extractQuestionsFromImage } from './openai.js';
 
 // Load environment variables from standard root and src/ directories
@@ -128,6 +128,35 @@ app.get('/cron/daily-practice', async (req, res) => {
   console.log(`[CRON] External daily practice triggered at ${new Date().toISOString()}`);
   await sendDailyPractice();
   res.json({ status: 'ok', message: 'Daily practice sent' });
+});
+
+// Backfill tags endpoint — run once to tag all existing questions
+app.get('/backfill-tags', async (req, res) => {
+  try {
+    const questions = await getQuestionsWithoutTags();
+    console.log(`[BACKFILL] Found ${questions.length} questions without tags`);
+
+    let updated = 0;
+    for (const q of questions) {
+      try {
+        const { tags } = await classifyQuestion(q.question);
+        if (tags.length > 0) {
+          await updateQuestionTags(q.id, tags);
+          updated++;
+          console.log(`[BACKFILL] Tagged Q${q.id}: ${tags.join(', ')}`);
+        }
+        // Small delay to avoid OpenAI rate limits
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } catch (err: any) {
+        console.error(`[BACKFILL] Error tagging Q${q.id}:`, err?.message);
+      }
+    }
+
+    res.json({ status: 'ok', total: questions.length, updated });
+  } catch (err: any) {
+    console.error('[BACKFILL] Error:', err?.message);
+    res.status(500).json({ error: err?.message });
+  }
 });
 
 // Telegram Webhook endpoint

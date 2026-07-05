@@ -124,22 +124,30 @@ export async function getDailyPracticeQuestions(limit: number): Promise<Question
     return revisionQuestions.slice(0, limit);
   }
 
-  // 2. Fill remaining slots with unseen questions
+  // 2. Fill remaining slots with unseen questions — fetch all then randomly pick
   const { data: unseenData, error: unseenErr } = await supabase
     .from('questions')
     .select('*')
-    .eq('review_status', 'unseen')
-    .order('id', { ascending: true })
-    .limit(remaining);
+    .eq('review_status', 'unseen');
 
   if (unseenErr) {
     throw unseenErr;
   }
 
-  const unseenQuestions = (unseenData || []) as Question[];
+  let unseenQuestions = (unseenData || []) as Question[];
 
-  // Combine and shuffle to mix topics
+  // Shuffle all unseen questions to get a random mix of topics
+  for (let i = unseenQuestions.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [unseenQuestions[i], unseenQuestions[j]] = [unseenQuestions[j], unseenQuestions[i]];
+  }
+
+  // Take only what we need
+  unseenQuestions = unseenQuestions.slice(0, remaining);
+
+  // Combine revision-due + random unseen
   const combined = [...revisionQuestions, ...unseenQuestions];
+  // Shuffle one more time to interleave revision and unseen
   for (let i = combined.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [combined[i], combined[j]] = [combined[j], combined[i]];
@@ -204,6 +212,36 @@ export async function markQuestionUnderstood(id: number): Promise<void> {
       next_review_date: null,
       review_count: newCount
     })
+    .eq('id', id);
+
+  if (error) {
+    throw error;
+  }
+}
+
+/**
+ * Gets all questions that have no tags (empty array or null).
+ */
+export async function getQuestionsWithoutTags(): Promise<Question[]> {
+  const { data, error } = await supabase
+    .from('questions')
+    .select('*')
+    .or('tags.is.null,tags.eq.{}');
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || []) as Question[];
+}
+
+/**
+ * Updates tags for a specific question.
+ */
+export async function updateQuestionTags(id: number, tags: string[]): Promise<void> {
+  const { error } = await supabase
+    .from('questions')
+    .update({ tags })
     .eq('id', id);
 
   if (error) {
