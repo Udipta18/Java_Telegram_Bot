@@ -113,6 +113,14 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Lightweight wake-up endpoint for external cron
+// Hit this URL 2 mins before the daily practice cron time to wake up the Render free server
+// e.g., if practice is at 8:00 AM IST, set external cron to hit /help at 7:58 AM IST
+app.get('/help', (req, res) => {
+  console.log(`[WAKE-UP] Server pinged at ${new Date().toISOString()}`);
+  res.json({ status: 'awake' });
+});
+
 // External cron trigger endpoint
 // Use a free service like cron-job.org to call this URL at 8 AM IST
 // URL: https://your-app.onrender.com/cron/daily-practice?secret=YOUR_CRON_SECRET
